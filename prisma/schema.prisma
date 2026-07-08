@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  clerkId      String   @unique
+  email        String?  @unique
+  firstName    String?
+  lastName     String?
+  imageUrl     String?
+  organization Json?
+
+  // Solo/B2C billing — source: Clerk CommerceSubscription, payerType 'user'
+  billingPlanId         String?
+  billingStatus         String?
+  billingSubscriptionId String?
+  billingPeriodEnd      DateTime?
+  billingSyncedAt       DateTime?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Organization {
+  id         String  @id @default(cuid())
+  clerkOrgId String  @unique
+  name       String?
+  slug       String?
+  imageUrl   String?
+
+  // Org/B2B billing — source: Clerk CommerceSubscription, payerType 'org'
+  billingPlanId         String?
+  billingStatus         String?
+  billingSubscriptionId String?
+  billingPeriodEnd      DateTime?
+  billingSyncedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("organizations")
+}
+
+model ProcessedWebhookEvent {
+  id        String   @id @default(cuid())
+  svixId    String   @unique
+  eventType String
+  createdAt DateTime @default(now())
+
+  @@map("processed_webhook_events")
+}
