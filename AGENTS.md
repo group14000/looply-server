@@ -71,10 +71,13 @@ src/
     guards/billing/billing.guard.ts   # metadata-driven, no-ops without @RequirePlan; reads request.userId
   products/
     products.module.ts       # imports UsersModule (org resolution)
-    products.service.ts      # create(clerkId, dto) — resolves the caller's org via UsersService.getOrganizationSnapshot,
-                              # auto-creates the local Organization row on demand, creates Product in one $transaction
-    products.controller.ts   # POST /products — 403 if the caller doesn't belong to an organization
-    dto/create-product.dto.ts, dto/product-response.dto.ts
+    products.service.ts      # create — resolves the caller's org via UsersService.getOrganizationSnapshot,
+                              # auto-creates the local Organization row on demand, creates Product in one $transaction.
+                              # findAll/findOne/update/remove — resolveCallerOrganizationId (no auto-create) scopes every
+                              # read/edit/delete to the caller's org; cross-tenant access is a 404 (never 403 — doesn't
+                              # leak that a product exists for another org), reusing findOne's check for update/remove
+    products.controller.ts   # POST/GET/GET :id/PATCH :id/DELETE :id /products — 403 if the caller has no organization at all
+    dto/create-product.dto.ts, dto/update-product.dto.ts (PartialType(CreateProductDto)), dto/product-response.dto.ts
   common/
     interfaces/api-response.interface.ts    # ApiSuccessResponse<T> / ApiErrorResponse — the envelope shape, shared by both below
     interceptors/transform.interceptor.ts   # wraps every successful response in ApiSuccessResponse, registered globally in main.ts
