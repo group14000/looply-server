@@ -16,7 +16,9 @@ export class FeedbackRequestResponseDto {
   @ApiProperty({ example: 'cljk3x9p10001qzrmn831i7rn' })
   productId: string;
 
-  @ApiProperty({ enum: ['PENDING', 'OPENED', 'COMPLETED', 'EXPIRED'] })
+  @ApiProperty({
+    enum: ['PENDING', 'OPENED', 'COMPLETED', 'EXPIRED', 'CANCELLED'],
+  })
   status: string;
 
   @ApiProperty({ example: 'https://app.looply.ai/review/9f2a...64chars' })

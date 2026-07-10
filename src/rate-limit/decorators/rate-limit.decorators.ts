@@ -39,6 +39,13 @@ export const AdminRateLimit = () => categoryOverride('ADMIN', 20, 60000);
 export const AiRateLimit = () => categoryOverride('AI', 15, 60000);
 export const UploadRateLimit = () => categoryOverride('UPLOAD', 10, 60000);
 export const WebhookRateLimit = () => categoryOverride('WEBHOOK', 60, 60000);
+/** Anonymous, capability-token-authenticated public routes — keyed by IP
+ * (AppThrottlerGuard falls back to IP when there's no request.userId), tighter
+ * than `default` since this traffic is unauthenticated and higher-risk. */
+export const PublicRateLimit = () => categoryOverride('PUBLIC', 20, 60000);
+/** Tighter still — the mutating public action (submit), not just a read. */
+export const PublicSubmitRateLimit = () =>
+  categoryOverride('PUBLIC_SUBMIT', 5, 60000);
 
 /** Full rate-limit bypass — reserved for internal/ops routes. */
 export const SkipRateLimit = () => applyDecorators(SkipThrottle());

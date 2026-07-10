@@ -16,7 +16,7 @@ tree. Update it whenever you change structure, conventions, or infra so it stays
 
 ```
 prisma/
-  schema.prisma            # User, Organization, ProcessedWebhookEvent, Product, FeedbackRequest models
+  schema.prisma            # User, Organization, ProcessedWebhookEvent, Product, FeedbackRequest, FeedbackSubmission models
 prisma.config.ts           # Prisma CLI config (schema path, migrations path, env loading)
 src/
   generated/prisma/        # generated Prisma Client (gitignored, regenerate with `pnpm exec prisma generate`)
@@ -33,7 +33,7 @@ src/
     auth.module.ts           # registers ClerkAuthGuard as the global APP_GUARD — every route requires auth by default
     guards/clerk-auth/clerk-auth.guard.ts   # ClerkAuthGuard — verifies Bearer token via ClerkService, attaches request.userId/sessionId; bypassed by @Public()
     decorators/clerk-user.decorator.ts      # @ClerkUserId(), @ClerkSessionId() param decorators, read what the guard attached
-    decorators/public.decorator.ts          # @Public() — opt-in, per-route bypass of ClerkAuthGuard, for signature-verified webhooks only
+    decorators/public.decorator.ts          # @Public() — opt-in, per-route bypass of ClerkAuthGuard; two sanctioned categories, see below
   redis/
     redis.module.ts          # @Global() — owns the cache-purpose ioredis connection
     redis.service.ts         # RedisService — non-blocking connect (lazyConnect), isReady getter, never blocks boot if Redis is down
@@ -79,17 +79,37 @@ src/
     products.controller.ts   # POST/GET/GET :id/PATCH :id/DELETE :id /products — 403 if the caller has no organization at all
     dto/create-product.dto.ts, dto/update-product.dto.ts (PartialType(CreateProductDto)), dto/product-response.dto.ts
   feedback/
-    feedback.module.ts       # imports ProductsModule (ownership check); declares its own ClerkConfigService provider
-                              # for frontendUrl, mirroring ClerkModule's pattern rather than importing ConfigurationModule
+    feedback.module.ts       # imports ProductsModule + UsersModule (ownership checks); declares its own ClerkConfigService
+                              # + FeedbackConfigService providers, mirroring ClerkModule's pattern rather than importing
+                              # ConfigurationModule; registers PublicFeedbackTokenGuard as a provider (route-scoped, not global)
     feedback.service.ts      # create — reuses ProductsService.findOne for the "product belongs to caller's org" check
                               # (404s, never re-derives org resolution independently); its returned Product.organizationId
                               # is reused directly to denormalize organizationId onto FeedbackRequest too (same pattern as
-                              # Product itself), rather than a second org-resolution lookup. Generates a
-                              # crypto.randomBytes(32) hex token (never sequential). buildReviewUrl(token) is computed
-                              # from ClerkConfigService.frontendUrl at call time — never persisted, so it can't drift
-                              # if FRONTEND_URL changes
-    feedback.controller.ts   # POST /feedback/request
-    dto/create-feedback-request.dto.ts, dto/feedback-request-response.dto.ts
+                              # Product itself). Generates a token (crypto.randomBytes(32) hex, never sequential), stores
+                              # only its HMAC-SHA256 hash (tokenHash), returns the raw token ONLY here — never recoverable
+                              # again, never in any list/detail response. buildReviewUrl(token) is computed from
+                              # ClerkConfigService.frontendUrl at call time — never persisted, so it can't drift if
+                              # FRONTEND_URL changes. findAll/findOne/update — org-authenticated CRUD mirroring
+                              # ProductsService's resolveCallerOrganizationId + 404-on-cross-tenant pattern (duplicated
+                              # here rather than extracted to a shared helper — small enough, two call sites).
+                              # getPublicView/submitPublic — the anonymous side, see the public-feedback-link section below
+    feedback.controller.ts        # POST/GET/GET :id/PATCH :id /feedback/requests — org-authenticated, 403 with no org at all.
+                                   # findAll/findOne/update map the service's Prisma-shaped return through a private
+                                   # toDetailDto() before responding — the raw row carries tokenHash/organizationId,
+                                   # neither of which belongs in the response even to the authenticated owner. A route
+                                   # handler that just `return`s the service's result directly (as findAll/findOne/
+                                   # update briefly did, caught in manual verification during this feature's build) leaks
+                                   # tokenHash into the org-side API by accident — always map through toDetailDto.
+    feedback-public.controller.ts # GET/POST :token(/submit) /public/feedback — anonymous, @Public() + PublicFeedbackTokenGuard
+    feedback-config/feedback-config.service.ts  # tokenPepper (throws if missing, only when read), linkTtlDays (default 30)
+    feedback-token.util.ts   # generateFeedbackToken (crypto.randomBytes), hashFeedbackToken (HMAC-SHA256, keyed by tokenPepper)
+    guards/public-feedback-token/public-feedback-token.guard.ts  # resolves :token -> FeedbackRequest, generic 404 if unresolved
+    decorators/feedback-context.decorator.ts  # @FeedbackContext() — reads what the guard attached, mirrors @ClerkUserId()
+    dto/create-feedback-request.dto.ts, dto/feedback-request-response.dto.ts (create response only, includes reviewUrl)
+    dto/feedback-request-detail.dto.ts   # org-side list/detail shape — no reviewUrl (see below), includes submission
+    dto/update-feedback-request.dto.ts, dto/list-feedback-requests-query.dto.ts
+    dto/public-feedback-view.dto.ts      # strict allowlist for the anonymous surface — see public-feedback-link section
+    dto/submit-feedback.dto.ts, dto/feedback-submission-response.dto.ts
   common/
     interfaces/api-response.interface.ts    # ApiSuccessResponse<T> / ApiErrorResponse — the envelope shape, shared by both below
     interceptors/transform.interceptor.ts   # wraps every successful response in ApiSuccessResponse, registered globally in main.ts
@@ -106,10 +126,17 @@ so every route in the app requires a valid Clerk Bearer token by default — inc
 with no `@UseGuards(...)` needed. **`@Public()`** (`auth/decorators/public.decorator.ts`) opts a
 specific route/controller out of this — `ClerkAuthGuard` injects `Reflector` and short-circuits
 `canActivate` when the metadata is present. It is opt-in only (undecorated routes are completely
-unaffected) and exists solely for signature-verified server-to-server receivers (see
-`BillingWebhookController`) — never use it for anything a browser/user hits directly, since it
-skips the session-token check entirely with no other gate unless the handler verifies something
-itself (e.g. a webhook signature).
+unaffected). **There are exactly two sanctioned categories of `@Public()` route, and the load-bearing
+invariant is the same for both: a `@Public()` route with no accompanying resolving gate is a bug.**
+`@Public()` means "not a Clerk session," never "unauthenticated."
+1. **Signature-verified server-to-server receivers** — `BillingWebhookController`, gated by `svix`
+   signature verification inside the handler itself.
+2. **Capability-token-authenticated, user-facing routes** — `FeedbackPublicController`
+   (`src/feedback/feedback-public.controller.ts`), gated by a dedicated resolving guard
+   (`PublicFeedbackTokenGuard`) stacked via `@UseGuards(...)` alongside `@Public()`. See the
+   public-feedback-link section below for the full model.
+Never add a `@Public()` route without one of these two gates — it would otherwise be genuinely
+unauthenticated.
 
 **Rate limiting and plan-gating are global too, and guard order matters.** `RateLimitModule`
 registers `AppThrottlerGuard`, and `BillingModule` registers `BillingGuard`, as additional global
@@ -130,6 +157,66 @@ matching `RATE_LIMIT_<NAME>_*` env vars per-request (not at decoration time). `@
 bypasses it entirely (internal/ops routes only). `BillingGuard` follows the identical
 no-op-unless-decorated shape: `@RequireSoloPlan()`/`@RequireOrgPlan()`
 (`billing/decorators/billing.decorators.ts`) gate a route; undecorated routes are unaffected.
+`@PublicRateLimit()`/`@PublicSubmitRateLimit()` are the same `categoryOverride` pattern applied to
+anonymous `@Public()` capability-token routes — since there's no `request.userId` on these,
+`AppThrottlerGuard` automatically falls back to IP-keying, which is exactly the desired behavior
+for unauthenticated traffic.
+
+**Public feedback link security model** (`src/feedback/` — the first genuinely anonymous,
+user-facing API surface in this app; everything else is either Clerk-authenticated or a
+signature-verified webhook):
+- **Two-tier ID split, deliberately no third `publicId`**: `FeedbackRequest.id` is org-side only,
+  never returned to the anonymous customer. The `token` (raw, 256-bit `crypto.randomBytes(32)` hex)
+  is the sole public capability credential — knowledge of it is both the identifier and the
+  authorization. A third id would only earn its place if some public context needed a stable
+  non-secret handle distinct from the secret (Stripe's `client_secret` pattern); this feature has
+  no such context.
+- **The token is stored hashed, never in plaintext**: `tokenHash = HMAC-SHA256(token,
+  FEEDBACK_TOKEN_PEPPER)` (`feedback-token.util.ts`), `@unique`/indexed on `FeedbackRequest`. A
+  *fast* keyed hash, not bcrypt/argon2 — this is 256 bits of CSPRNG entropy, not a low-entropy
+  password, so a slow hash defends against nothing here and would let an attacker turn the KDF into
+  a DoS amplifier; it also must stay **deterministic** so `where: { tokenHash }` remains an O(1)
+  indexed lookup, which bcrypt/argon2's per-call salting would break. The pepper means a DB-only
+  leak (without the app secret) can't be used to derive or verify a token. The raw token is
+  generated and returned **once**, from `FeedbackService.create`, embedded in `reviewUrl` — never
+  stored in recoverable form, and never present in any list/detail response
+  (`FeedbackRequestDetailDto` has no `reviewUrl` field at all — it's unreconstructable once hashed).
+- **`PublicFeedbackTokenGuard`** (`guards/public-feedback-token/`) mirrors `ClerkAuthGuard`'s shape —
+  resolves an identity and attaches it to the request — but keyed on the `:token` path param instead
+  of a header: hashes the incoming token, `findUnique` by `tokenHash`, attaches
+  `request.feedbackRequest` on success. A companion `@FeedbackContext()` decorator reads it,
+  mirroring `@ClerkUserId()`.
+- **Disclosure principle — the one rule that resolves every "how much do we tell them" question**:
+  a token that resolves to **no row at all** always gets a byte-identical, generic 404 — whether
+  it's a typo, a wrong guess, or never existed. Enumeration must stay opaque here, always. But once
+  a token **does** resolve to a real row, its state (expired/cancelled/already submitted) is safe to
+  reveal — the requester has already proven possession of the 256-bit secret, so telling them the
+  state leaks nothing they didn't already hold. This is why `GoneException` (410, expired/cancelled)
+  and `ConflictException` (409, already submitted) are used freely once resolved, while
+  `PublicFeedbackTokenGuard` only ever throws a generic, message-less `NotFoundException`.
+- **Single-use submit, race-safe via a conditional `updateMany`, never a read-then-write**:
+  `FeedbackService.submitPublic` guards the status transition in the `WHERE` clause
+  (`status: { in: ['PENDING', 'OPENED'] }`) and checks the affected-row `count`, not a prior read —
+  Postgres row-locks the single `UPDATE` statement, so of two concurrent submits exactly one gets
+  `count === 1`. The `FeedbackSubmission` create happens in the same `$transaction`, downstream of a
+  successful mutex. `FeedbackSubmission.feedbackRequestId`'s own `@unique` constraint is a second,
+  DB-level idempotency backstop (same "constraint as truth" idiom as
+  `ProcessedWebhookEvent.svixId`/`BillingWebhookProcessor`).
+- **Expiry is enforced live, on every request, never solely by a background sweep** — `expiresAt`
+  is set at creation (`FEEDBACK_LINK_TTL_DAYS`, default 30) and checked against `new Date()` inside
+  `getPublicView`/`submitPublic` directly. A future cleanup sweep flipping stale rows to `EXPIRED`
+  would only ever be a reporting convenience, never the actual access-control gate (same
+  never-load-bearing-on-a-timer principle already established for Redis in this app).
+- **The token travels in the URL path, so `AllExceptionsFilter`/`TransformInterceptor`'s `path`
+  field (and the error logger call) would otherwise echo a live, replayable secret into every
+  response and every log line for these routes.** `common/utils/redact-path.util.ts`'s
+  `redactSensitivePath` rewrites the `/public/feedback/:token` segment to `[redacted]` before either
+  place uses it. If a second capability-token route family is ever added outside `/public/feedback`,
+  extend that function's pattern — don't assume it's covered.
+- **Public responses (`PublicFeedbackViewDto`) are a strict allowlist, never the org-side DTO**:
+  never `id`, `organizationId`, `productId`, `token`/`tokenHash`, or the stored recipient `email`
+  (PII the link-forwarding recipient shouldn't learn). Only `productName`, `organizationName`,
+  `companyName`, `customerName`, `optionalMessage`, `status`, `canSubmit`.
 
 **Redis is optional and non-blocking; the queue is not.** `RedisModule`/`CacheModule` wrap a
 cache-purpose `ioredis` connection (`lazyConnect`, bounded retries, `enableOfflineQueue: false`) —
@@ -191,6 +278,11 @@ documented interceptor/filter pattern, hand-rolled):
   dashboard plan IDs). **`BILLING_WEBHOOK_SECRET` is the one billing var that throws if missing** —
   but only when the webhook route is actually hit (`BillingConfigService.webhookSecret` is a
   getter read inside the handler, not at DI/boot time), so its absence never blocks app startup.
+- **`FEEDBACK_TOKEN_PEPPER` is required** (throws only when a feedback token is actually
+  generated/verified, same never-blocks-boot pattern as `BILLING_WEBHOOK_SECRET`) — it's the HMAC
+  key hashing every feedback link token; **rotating it invalidates every outstanding link**, since
+  verification re-derives the hash from `token + pepper`. `FEEDBACK_LINK_TTL_DAYS` is optional
+  (default 30).
 
 ## Running locally
 
@@ -235,9 +327,20 @@ Get-NetTCPConnection -LocalPort 5000 -State Listen | ForEach-Object { Stop-Proce
   *is* a real Prisma enum.** The difference is deliberate: billing status is Clerk's
   `@experimental` API vocabulary, external and possibly still shifting, so a `String` avoids
   migration churn this app doesn't control. `FeedbackRequestStatus` (`PENDING`/`OPENED`/
-  `COMPLETED`/`EXPIRED`) is a small, fully internally-owned, stable state machine — a real enum is
-  more type-safe with no equivalent risk. Don't default to `String` for every future status field
-  without checking which case applies.
+  `COMPLETED`/`EXPIRED`/`CANCELLED`) is a small, fully internally-owned, stable state machine — a
+  real enum is more type-safe with no equivalent risk. Don't default to `String` for every future
+  status field without checking which case applies. Allowed transitions: `PENDING`→`OPENED` (public
+  GET, first open) / `PENDING`or`OPENED`→`COMPLETED` (public POST submit, race-safe) / `PENDING`
+  or`OPENED`→`CANCELLED` (org-authenticated `PATCH`) / any non-terminal state→`EXPIRED` (evaluated
+  live, never solely by a sweep). All other states are terminal — e.g. cancelling a `COMPLETED`
+  request is rejected with 409.
+- **`FeedbackRequest`/`FeedbackSubmission` are split into two models, not one.** Submission content
+  (customer-authored, written via the anonymous public endpoint) has a different trust boundary and
+  write path than the request itself (org-authored, written via the authenticated endpoint) — the
+  split means future structured Q&A/ratings/attachments are purely additive child tables of
+  `FeedbackSubmission`, never a redesign of `FeedbackRequest`. `FeedbackSubmission.feedbackRequestId`
+  is `@unique`, enforcing one submission per request at the DB level (also the idempotency backstop
+  for the race-safe submit flow — see the public-feedback-link section above).
 - **Setting a nullable `Json` field to "no value" needs `Prisma.DbNull`, not plain `null`.** Passing
   JS `null` for an optional `Json?` column is a type error (`NullableJsonNullValueInput` expects
   `Prisma.DbNull` for an actual database NULL, or `Prisma.JsonNull` for a stored JSON `null` literal
@@ -350,3 +453,18 @@ directory (e.g. `nest g s auth/services/foo`) over `--flat`.
     (`"^(\\.{1,2}/.*)\\.js$": "$1"`) so any spec that transitively imports `PrismaService` (directly
     or via a service like `BillingService`) doesn't fail with `Cannot find module './internal/class.js'`.
     If a fresh `prisma generate` ever changes this import style, revisit this mapping.
+14. **`prisma migrate dev` refuses to run at all in a non-interactive shell whenever it has
+    *anything* to confirm** (a destructive column change, a new required column, etc.) — it exits
+    with "Prisma Migrate has detected that the environment is non-interactive," even with a piped
+    `y`/`--create-only`. When that happens: generate the raw SQL with
+    `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script`, hand-write
+    it into a new `prisma/migrations/<timestamp>_<name>/migration.sql` (timestamp format
+    `YYYYMMDDHHMMSS`, matching existing folders), then apply with `prisma migrate deploy` (fully
+    non-interactive, applies any migration on disk not yet in `_prisma_migrations`). Verify after
+    with `prisma migrate status` ("Database schema is up to date!").
+15. **A required (`NOT NULL`) column added to a table that already has rows needs those rows
+    handled before migrating** — `prisma migrate deploy` will fail applying the `ALTER TABLE` on a
+    genuine conflict. In this early-stage app, existing rows are almost always disposable
+    test/verification data from prior manual `curl` testing — delete the *specific* row(s) by
+    primary key (never an unpredicated table-wide `DELETE`) before migrating, and confirm with the
+    user's authorization framing in mind (this is a real, if small, destructive action).

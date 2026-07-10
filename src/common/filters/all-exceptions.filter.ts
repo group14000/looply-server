@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiErrorResponse } from '../interfaces/api-response.interface';
+import { redactSensitivePath } from '../utils/redact-path.util';
 
 /**
  * Single place that turns any thrown error into the standard error envelope
@@ -29,9 +30,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
     const { message, error } = this.normalize(exception, statusCode);
+    const path = redactSensitivePath(request.url);
 
     this.logger.error(
-      `${request.method} ${request.url} -> ${statusCode}: ${Array.isArray(message) ? message.join(', ') : message}`,
+      `${request.method} ${path} -> ${statusCode}: ${Array.isArray(message) ? message.join(', ') : message}`,
       exception instanceof HttpException
         ? undefined
         : (exception as Error)?.stack,
@@ -43,7 +45,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message,
       error,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path,
     };
 
     response.status(statusCode).json(body);

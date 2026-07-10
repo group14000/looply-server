@@ -79,6 +79,7 @@ enum FeedbackRequestStatus {
   OPENED
   COMPLETED
   EXPIRED
+  CANCELLED
 }
 
 model FeedbackRequest {
@@ -87,9 +88,21 @@ model FeedbackRequest {
   companyName     String
   email           String
   optionalMessage String?
-  token           String                @unique
+  tokenHash       String                @unique
   status          FeedbackRequestStatus @default(PENDING)
   expiresAt       DateTime?
+
+  openedAt    DateTime?
+  openCount   Int       @default(0)
+  cancelledAt DateTime?
+
+  // Schema-only groundwork — no queue/processor built yet, see AGENTS.md.
+  emailSentAt DateTime?
+  emailStatus String?
+
+  // Groundwork for a future non-responder reminder sweep.
+  lastReminderAt DateTime?
+  reminderCount  Int       @default(0)
 
   productId String
   product   Product @relation(fields: [productId], references: [id])
@@ -97,12 +110,31 @@ model FeedbackRequest {
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id])
 
+  submission FeedbackSubmission?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([productId])
   @@index([organizationId])
+  @@index([status, createdAt])
   @@map("feedback_requests")
+}
+
+model FeedbackSubmission {
+  id                String          @id @default(cuid())
+  feedbackRequestId String          @unique
+  feedbackRequest   FeedbackRequest @relation(fields: [feedbackRequestId], references: [id])
+
+  rating  Int?
+  comment String?
+
+  submittedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("feedback_submissions")
 }
 
 model ProcessedWebhookEvent {
