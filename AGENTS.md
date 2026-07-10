@@ -16,7 +16,7 @@ tree. Update it whenever you change structure, conventions, or infra so it stays
 
 ```
 prisma/
-  schema.prisma            # User, Organization, ProcessedWebhookEvent models
+  schema.prisma            # User, Organization, ProcessedWebhookEvent, Product models
 prisma.config.ts           # Prisma CLI config (schema path, migrations path, env loading)
 src/
   generated/prisma/        # generated Prisma Client (gitignored, regenerate with `pnpm exec prisma generate`)
@@ -50,8 +50,9 @@ src/
     processors/user-sync.processor.ts       # example/first processor, not currently enqueued from anywhere
     processors/billing-webhook.processor.ts # processes billing.sync jobs — DB-unique-constraint idempotency, see billing/ below
   users/
-    users.module.ts          # imports ClerkModule (PrismaModule is global, no import needed)
+    users.module.ts          # imports ClerkModule (PrismaModule is global, no import needed); exports UsersService
     users.service.ts         # syncFromClerk(clerkId) — fetches Clerk profile + first org membership, upserts into local `users` table by clerkId
+                              # getOrganizationSnapshot(clerkId) — shared org-resolution lookup, reused by BillingService and ProductsService
     users.controller.ts      # POST /users/sync — self-sync only, clerkId comes from @ClerkUserId() (the caller's own token), never from the request body
     dto/user-response.dto.ts       # UserResponseDto — Swagger DTO for the User row, includes nested organization
     dto/organization.dto.ts        # OrganizationDto — Swagger shape for the organization JSON snapshot (id, name, slug, imageUrl)
@@ -68,6 +69,12 @@ src/
     billing-config/billing-config.service.ts  # soloPlanId/orgPlanId (default to the real cplan_ ids), webhookSecret (throws if missing)
     decorators/billing.decorators.ts  # @RequirePlan(...)/@RequireSoloPlan()/@RequireOrgPlan()
     guards/billing/billing.guard.ts   # metadata-driven, no-ops without @RequirePlan; reads request.userId
+  products/
+    products.module.ts       # imports UsersModule (org resolution)
+    products.service.ts      # create(clerkId, dto) — resolves the caller's org via UsersService.getOrganizationSnapshot,
+                              # auto-creates the local Organization row on demand, creates Product in one $transaction
+    products.controller.ts   # POST /products — 403 if the caller doesn't belong to an organization
+    dto/create-product.dto.ts, dto/product-response.dto.ts
   common/
     interfaces/api-response.interface.ts    # ApiSuccessResponse<T> / ApiErrorResponse — the envelope shape, shared by both below
     interceptors/transform.interceptor.ts   # wraps every successful response in ApiSuccessResponse, registered globally in main.ts

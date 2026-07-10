@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ClerkService } from '../clerk/clerk/clerk.service';
 import { CacheService } from '../cache/cache.service';
 import { buildCacheKey } from '../cache/cache-key.util';
+import { UsersService } from '../users/users.service';
 import { BillingConfigService } from './billing-config/billing-config.service';
 import { BillingPlan } from './decorators/billing.decorators';
 
@@ -43,6 +44,7 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     private readonly billingConfig: BillingConfigService,
+    private readonly usersService: UsersService,
   ) {}
 
   /** Picks the subscription item matching one of our two known plan IDs, if any. */
@@ -149,12 +151,8 @@ export class BillingService {
 
   /** The Clerk org id from the user's existing organization JSON snapshot, if any. */
   private async resolveOrgId(clerkId: string): Promise<string | null> {
-    const user = await this.cache.getOrSet(
-      buildCacheKey('user', clerkId),
-      () => this.prisma.user.findUnique({ where: { clerkId } }),
-      BILLING_CACHE_TTL_SECONDS,
-    );
-    const orgSnapshot = user?.organization as { id?: string } | null;
+    const orgSnapshot =
+      await this.usersService.getOrganizationSnapshot(clerkId);
     return orgSnapshot?.id ?? null;
   }
 

@@ -1,6 +1,9 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ClerkService } from '../clerk/clerk/clerk.service';
+import {
+  ClerkService,
+  ClerkOrganizationSummary,
+} from '../clerk/clerk/clerk.service';
 import { Prisma, User } from '../generated/prisma/client';
 import { CacheService } from '../cache/cache.service';
 import { buildCacheKey } from '../cache/cache-key.util';
@@ -56,5 +59,22 @@ export class UsersService {
 
     this.logger.log(`Synced user ${clerkId} from Clerk`);
     return user;
+  }
+
+  /**
+   * The caller's own org snapshot (id/name/slug/imageUrl), from the cached
+   * User row's organization JSON field — the shared org-resolution lookup
+   * used by both BillingService (entitlement checks) and ProductsService
+   * (scoping new products to the caller's org).
+   */
+  async getOrganizationSnapshot(
+    clerkId: string,
+  ): Promise<ClerkOrganizationSummary | null> {
+    const user = await this.cache.getOrSet(
+      buildCacheKey('user', clerkId),
+      () => this.prisma.user.findUnique({ where: { clerkId } }),
+      USER_CACHE_TTL_SECONDS,
+    );
+    return (user?.organization as ClerkOrganizationSummary | null) ?? null;
   }
 }

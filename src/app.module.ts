@@ -11,6 +11,7 @@ import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
 import { QueueModule } from './queue/queue.module';
 import { BillingModule } from './billing/billing.module';
+import { ProductsModule } from './products/products.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { BillingModule } from './billing/billing.module';
     RateLimitModule,
     BillingModule,
     UsersModule,
+    ProductsModule,
     QueueModule,
   ],
   controllers: [AppController],

@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { ClerkModule } from '../clerk/clerk.module';
+import { UsersModule } from '../users/users.module';
 import { QUEUE_NAMES } from '../queue/queue.constants';
 import { BillingConfigService } from './billing-config/billing-config.service';
 import { BillingService } from './billing.service';
@@ -20,6 +21,7 @@ import { BillingController } from './billing.controller';
   imports: [
     ConfigModule,
     ClerkModule,
+    UsersModule,
     BullModule.registerQueue({ name: QUEUE_NAMES.BILLING_SYNC }),
   ],
   controllers: [BillingWebhookController, BillingController],
