@@ -49,7 +49,8 @@ model Organization {
   billingPeriodEnd      DateTime?
   billingSyncedAt       DateTime?
 
-  products Product[]
+  products         Product[]
+  feedbackRequests FeedbackRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -64,11 +65,44 @@ model Product {
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id])
 
+  feedbackRequests FeedbackRequest[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([organizationId])
   @@map("products")
+}
+
+enum FeedbackRequestStatus {
+  PENDING
+  OPENED
+  COMPLETED
+  EXPIRED
+}
+
+model FeedbackRequest {
+  id              String                @id @default(cuid())
+  customerName    String
+  companyName     String
+  email           String
+  optionalMessage String?
+  token           String                @unique
+  status          FeedbackRequestStatus @default(PENDING)
+  expiresAt       DateTime?
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([organizationId])
+  @@map("feedback_requests")
 }
 
 model ProcessedWebhookEvent {

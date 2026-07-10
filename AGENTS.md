@@ -16,7 +16,7 @@ tree. Update it whenever you change structure, conventions, or infra so it stays
 
 ```
 prisma/
-  schema.prisma            # User, Organization, ProcessedWebhookEvent, Product models
+  schema.prisma            # User, Organization, ProcessedWebhookEvent, Product, FeedbackRequest models
 prisma.config.ts           # Prisma CLI config (schema path, migrations path, env loading)
 src/
   generated/prisma/        # generated Prisma Client (gitignored, regenerate with `pnpm exec prisma generate`)
@@ -70,7 +70,7 @@ src/
     decorators/billing.decorators.ts  # @RequirePlan(...)/@RequireSoloPlan()/@RequireOrgPlan()
     guards/billing/billing.guard.ts   # metadata-driven, no-ops without @RequirePlan; reads request.userId
   products/
-    products.module.ts       # imports UsersModule (org resolution)
+    products.module.ts       # imports UsersModule (org resolution); exports ProductsService (reused by FeedbackModule)
     products.service.ts      # create — resolves the caller's org via UsersService.getOrganizationSnapshot,
                               # auto-creates the local Organization row on demand, creates Product in one $transaction.
                               # findAll/findOne/update/remove — resolveCallerOrganizationId (no auto-create) scopes every
@@ -78,6 +78,18 @@ src/
                               # leak that a product exists for another org), reusing findOne's check for update/remove
     products.controller.ts   # POST/GET/GET :id/PATCH :id/DELETE :id /products — 403 if the caller has no organization at all
     dto/create-product.dto.ts, dto/update-product.dto.ts (PartialType(CreateProductDto)), dto/product-response.dto.ts
+  feedback/
+    feedback.module.ts       # imports ProductsModule (ownership check); declares its own ClerkConfigService provider
+                              # for frontendUrl, mirroring ClerkModule's pattern rather than importing ConfigurationModule
+    feedback.service.ts      # create — reuses ProductsService.findOne for the "product belongs to caller's org" check
+                              # (404s, never re-derives org resolution independently); its returned Product.organizationId
+                              # is reused directly to denormalize organizationId onto FeedbackRequest too (same pattern as
+                              # Product itself), rather than a second org-resolution lookup. Generates a
+                              # crypto.randomBytes(32) hex token (never sequential). buildReviewUrl(token) is computed
+                              # from ClerkConfigService.frontendUrl at call time — never persisted, so it can't drift
+                              # if FRONTEND_URL changes
+    feedback.controller.ts   # POST /feedback/request
+    dto/create-feedback-request.dto.ts, dto/feedback-request-response.dto.ts
   common/
     interfaces/api-response.interface.ts    # ApiSuccessResponse<T> / ApiErrorResponse — the envelope shape, shared by both below
     interceptors/transform.interceptor.ts   # wraps every successful response in ApiSuccessResponse, registered globally in main.ts
@@ -212,11 +224,20 @@ Get-NetTCPConnection -LocalPort 5000 -State Listen | ForEach-Object { Stop-Proce
   elsewhere.
 - Import the client as `from '../generated/prisma/client'` (or however many `../` levels apply)
   — there's no barrel `index.ts` in the generated output, `client` is the actual entry file.
-- `prisma/schema.prisma` has one model so far: `User` (maps to table `users`, unique on
-  `clerkId` and `email`) — the local mirror of a Clerk user, populated by `UsersService.syncFromClerk`.
-  `organization` is a nullable `Json` snapshot (`{ id, name, slug, imageUrl }`) of the user's first
-  Clerk organization membership (`ClerkService.getUserPrimaryOrganization`), refreshed on every sync
-  — not a relational table, since we only need a denormalized display snapshot, not to query by org.
+- `User` (table `users`, unique on `clerkId`/`email`) is the local mirror of a Clerk user,
+  populated by `UsersService.syncFromClerk`. `organization` is a nullable `Json` snapshot
+  (`{ id, name, slug, imageUrl }`) of the user's first Clerk organization membership
+  (`ClerkService.getUserPrimaryOrganization`), refreshed on every sync — not a relational table,
+  since we only need a denormalized display snapshot, not to query by org (`Organization` is a
+  separate, real relational table, but only for billing state + owning `Product`/`FeedbackRequest`
+  rows — see the `billing`/`products`/`feedback` project-structure entries above).
+- **Billing status fields (`User`/`Organization`) are `String`, not enums — `FeedbackRequest.status`
+  *is* a real Prisma enum.** The difference is deliberate: billing status is Clerk's
+  `@experimental` API vocabulary, external and possibly still shifting, so a `String` avoids
+  migration churn this app doesn't control. `FeedbackRequestStatus` (`PENDING`/`OPENED`/
+  `COMPLETED`/`EXPIRED`) is a small, fully internally-owned, stable state machine — a real enum is
+  more type-safe with no equivalent risk. Don't default to `String` for every future status field
+  without checking which case applies.
 - **Setting a nullable `Json` field to "no value" needs `Prisma.DbNull`, not plain `null`.** Passing
   JS `null` for an optional `Json?` column is a type error (`NullableJsonNullValueInput` expects
   `Prisma.DbNull` for an actual database NULL, or `Prisma.JsonNull` for a stored JSON `null` literal
