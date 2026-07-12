@@ -10,6 +10,7 @@ import { UsersService } from '../users/users.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClerkConfigService } from '../config/clerk-config/clerk-config.service';
 import { FeedbackConfigService } from './feedback-config/feedback-config.service';
+import { decodeCursor } from './pagination.util';
 
 describe('FeedbackService', () => {
   let productsService: { findOne: jest.Mock };
@@ -268,11 +269,15 @@ describe('FeedbackService', () => {
       );
     });
 
-    it('returns [] when the org exists in Clerk but has no local row yet', async () => {
+    it('returns an empty page when the org exists in Clerk but has no local row yet', async () => {
       usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
       prisma.organization.findUnique.mockResolvedValue(null);
 
-      await expect(service.findAll('user_1', {})).resolves.toEqual([]);
+      await expect(service.findAll('user_1', {})).resolves.toEqual({
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+      });
       expect(prisma.feedbackRequest.findMany).not.toHaveBeenCalled();
     });
 
@@ -286,8 +291,96 @@ describe('FeedbackService', () => {
       expect(prisma.feedbackRequest.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ organizationId: 'local_org_1' }),
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         }),
       );
+    });
+
+    it('builds an OR search clause across customerName/companyName/email', async () => {
+      usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
+      prisma.organization.findUnique.mockResolvedValue({ id: 'local_org_1' });
+      prisma.feedbackRequest.findMany.mockResolvedValue([]);
+
+      await service.findAll('user_1', { search: 'jane' });
+
+      expect(prisma.feedbackRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: [
+              {
+                customerName: { contains: 'jane', mode: 'insensitive' },
+              },
+              {
+                companyName: { contains: 'jane', mode: 'insensitive' },
+              },
+              { email: { contains: 'jane', mode: 'insensitive' } },
+            ],
+          }),
+        }),
+      );
+    });
+
+    it('requests limit + 1 rows and reports hasMore/nextCursor when more remain', async () => {
+      usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
+      prisma.organization.findUnique.mockResolvedValue({ id: 'local_org_1' });
+      prisma.feedbackRequest.findMany.mockResolvedValue([
+        { id: 'fr_1' },
+        { id: 'fr_2' },
+        { id: 'fr_3' }, // the extra row proving a next page exists
+      ]);
+
+      const result = await service.findAll('user_1', { limit: 2 });
+
+      expect(prisma.feedbackRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 3 }),
+      );
+      expect(result.items).toEqual([{ id: 'fr_1' }, { id: 'fr_2' }]);
+      expect(result.hasMore).toBe(true);
+      expect(result.nextCursor).not.toBeNull();
+      expect(decodeCursor(result.nextCursor as string)).toEqual({
+        id: 'fr_2',
+      });
+    });
+
+    it('reports hasMore: false and nextCursor: null on the last page', async () => {
+      usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
+      prisma.organization.findUnique.mockResolvedValue({ id: 'local_org_1' });
+      prisma.feedbackRequest.findMany.mockResolvedValue([{ id: 'fr_1' }]);
+
+      const result = await service.findAll('user_1', { limit: 2 });
+
+      expect(result.items).toEqual([{ id: 'fr_1' }]);
+      expect(result.hasMore).toBe(false);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('passes a decoded cursor through to Prisma as { id } with skip: 1', async () => {
+      usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
+      prisma.organization.findUnique.mockResolvedValue({ id: 'local_org_1' });
+      prisma.feedbackRequest.findMany.mockResolvedValue([]);
+
+      const cursor = Buffer.from(JSON.stringify({ id: 'fr_2' })).toString(
+        'base64url',
+      );
+      await service.findAll('user_1', { cursor });
+
+      expect(prisma.feedbackRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: { id: 'fr_2' }, skip: 1 }),
+      );
+    });
+
+    it('degrades a malformed cursor to the first page instead of erroring', async () => {
+      usersService.getOrganizationSnapshot.mockResolvedValue({ id: 'org_abc' });
+      prisma.organization.findUnique.mockResolvedValue({ id: 'local_org_1' });
+      prisma.feedbackRequest.findMany.mockResolvedValue([]);
+
+      await expect(
+        service.findAll('user_1', { cursor: 'not-a-real-cursor!!!' }),
+      ).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
+
+      const call = prisma.feedbackRequest.findMany.mock.calls[0][0];
+      expect(call).not.toHaveProperty('cursor');
+      expect(call).not.toHaveProperty('skip');
     });
   });
 

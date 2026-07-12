@@ -15,6 +15,7 @@ import { UpdateFeedbackRequestDto } from './dto/update-feedback-request.dto';
 import { ListFeedbackRequestsQueryDto } from './dto/list-feedback-requests-query.dto';
 import { FeedbackRequestResponseDto } from './dto/feedback-request-response.dto';
 import { FeedbackRequestDetailDto } from './dto/feedback-request-detail.dto';
+import { PaginatedFeedbackRequestsDto } from './dto/paginated-feedback-requests.dto';
 import { ApiStandardResponse } from '../common/decorators/api-standard-response.decorator';
 import { WriteRateLimit } from '../rate-limit/decorators/rate-limit.decorators';
 
@@ -108,20 +109,30 @@ export class FeedbackController {
 
   @Get()
   @ApiOperation({
-    summary: "List the caller's organization's feedback requests",
+    summary: "List/search the caller's organization's feedback requests",
+    description:
+      "Cursor-paginated (see AGENTS.md) — pass the previous response's " +
+      '`nextCursor` back as `cursor` to fetch the next page. `search` matches ' +
+      'case-insensitively across customerName/companyName/email.',
   })
-  @ApiStandardResponse(FeedbackRequestDetailDto, {
-    isArray: true,
+  @ApiStandardResponse(PaginatedFeedbackRequestsDto, {
     description: "Caller's organization feedback requests",
   })
   async findAll(
     @ClerkUserId() clerkId: string,
     @Query() query: ListFeedbackRequestsQueryDto,
-  ): Promise<FeedbackRequestDetailDto[]> {
-    const requests = await this.feedbackService.findAll(clerkId, query);
-    return (requests as unknown as FeedbackRequestWithSubmission[]).map(
-      toDetailDto,
+  ): Promise<PaginatedFeedbackRequestsDto> {
+    const { items, nextCursor, hasMore } = await this.feedbackService.findAll(
+      clerkId,
+      query,
     );
+    return {
+      items: (items as unknown as FeedbackRequestWithSubmission[]).map(
+        toDetailDto,
+      ),
+      nextCursor,
+      hasMore,
+    };
   }
 
   @Get(':id')

@@ -20,6 +20,7 @@ import {
   generateFeedbackToken,
   hashFeedbackToken,
 } from './feedback-token.util';
+import { encodeCursor, decodeCursor } from './pagination.util';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -198,7 +199,11 @@ export class FeedbackService {
   async findAll(
     clerkId: string,
     query: ListFeedbackRequestsQueryDto,
-  ): Promise<FeedbackRequest[]> {
+  ): Promise<{
+    items: FeedbackRequest[];
+    nextCursor: string | null;
+    hasMore: boolean;
+  }> {
     const orgId = await this.resolveCallerOrganizationId(clerkId);
     if (orgId === null) {
       const snapshot = await this.usersService.getOrganizationSnapshot(clerkId);
@@ -207,19 +212,62 @@ export class FeedbackService {
           'You must belong to an organization to view feedback requests',
         );
       }
-      return [];
+      return { items: [], nextCursor: null, hasMore: false };
     }
-    return this.prisma.feedbackRequest.findMany({
-      where: {
-        organizationId: orgId,
-        ...(query.status
-          ? { status: query.status as FeedbackRequest['status'] }
-          : {}),
-        ...(query.productId ? { productId: query.productId } : {}),
-      },
+
+    const limit = query.limit ?? 20;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : null;
+
+    const where = {
+      organizationId: orgId,
+      ...(query.status
+        ? { status: query.status as FeedbackRequest['status'] }
+        : {}),
+      ...(query.productId ? { productId: query.productId } : {}),
+      ...(query.search
+        ? {
+            OR: [
+              {
+                customerName: {
+                  contains: query.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+              {
+                companyName: {
+                  contains: query.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+              {
+                email: {
+                  contains: query.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    // Cursor-based (keyset) pagination — see AGENTS.md for why, over offset/
+    // time-based/hybrid. `id` as a tiebreaker on `createdAt` makes the cursor
+    // deterministic even when rows share a millisecond-resolution timestamp.
+    const rows = await this.prisma.feedbackRequest.findMany({
+      where,
       include: { submission: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor.id }, skip: 1 } : {}),
     });
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore
+      ? encodeCursor(items[items.length - 1].id)
+      : null;
+
+    return { items, nextCursor, hasMore };
   }
 
   /** 404s (never 403) for cross-tenant access — same convention as ProductsService.findOne. */

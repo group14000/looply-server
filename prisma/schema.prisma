@@ -116,7 +116,7 @@ model FeedbackRequest {
   updatedAt DateTime @updatedAt
 
   @@index([productId])
-  @@index([organizationId])
+  @@index([organizationId, createdAt])
   @@index([status, createdAt])
   @@map("feedback_requests")
 }

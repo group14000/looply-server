@@ -92,7 +92,19 @@ src/
                               # FRONTEND_URL changes. findAll/findOne/update — org-authenticated CRUD mirroring
                               # ProductsService's resolveCallerOrganizationId + 404-on-cross-tenant pattern (duplicated
                               # here rather than extracted to a shared helper — small enough, two call sites).
-                              # getPublicView/submitPublic — the anonymous side, see the public-feedback-link section below
+                              # findAll is cursor-paginated (see pagination.util.ts below) with an optional `search`
+                              # (case-insensitive OR-contains across customerName/companyName/email) — chosen over
+                              # offset pagination specifically because rows are inserted at the sorted (createdAt DESC)
+                              # front continuously, which is exactly the case offset pagination corrupts (a page-2
+                              # request can duplicate a row that offset-shifted down while browsing). Time-based
+                              # pagination is subsumed (the cursor's tiebreaker generalizes it); hybrid solves a
+                              # deep-scale problem this endpoint doesn't have. getPublicView/submitPublic — the
+                              # anonymous side, see the public-feedback-link section below
+    pagination.util.ts       # encodeCursor/decodeCursor — opaque base64url cursor wrapping just { id }; orderBy always
+                              # includes `id` as a tiebreaker after createdAt, which is what makes a Prisma
+                              # cursor/skip: 1 query deterministic even when rows share a millisecond-resolution
+                              # createdAt. A cursor that fails to decode (malformed/stale) is silently treated as "no
+                              # cursor" (first page), never a 400 — the forgiving default for a read endpoint.
     feedback.controller.ts        # POST/GET/GET :id/PATCH :id /feedback/requests — org-authenticated, 403 with no org at all.
                                    # findAll/findOne/update map the service's Prisma-shaped return through a private
                                    # toDetailDto() before responding — the raw row carries tokenHash/organizationId,
@@ -107,7 +119,9 @@ src/
     decorators/feedback-context.decorator.ts  # @FeedbackContext() — reads what the guard attached, mirrors @ClerkUserId()
     dto/create-feedback-request.dto.ts, dto/feedback-request-response.dto.ts (create response only, includes reviewUrl)
     dto/feedback-request-detail.dto.ts   # org-side list/detail shape — no reviewUrl (see below), includes submission
-    dto/update-feedback-request.dto.ts, dto/list-feedback-requests-query.dto.ts
+    dto/update-feedback-request.dto.ts
+    dto/list-feedback-requests-query.dto.ts  # status/productId filters + search/cursor/limit (pagination)
+    dto/paginated-feedback-requests.dto.ts   # { items, nextCursor, hasMore } — the findAll response shape
     dto/public-feedback-view.dto.ts      # strict allowlist for the anonymous surface — see public-feedback-link section
     dto/submit-feedback.dto.ts, dto/feedback-submission-response.dto.ts
   common/
