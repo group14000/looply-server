@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   ForbiddenException,
   NotFoundException,
@@ -121,6 +122,14 @@ export class ProductsService {
 
   async remove(clerkId: string, id: string): Promise<Product> {
     await this.findOne(clerkId, id);
+    const dependentCount = await this.prisma.feedbackRequest.count({
+      where: { productId: id },
+    });
+    if (dependentCount > 0) {
+      throw new ConflictException(
+        `Cannot delete this product — it has ${dependentCount} associated feedback request(s). Cancel them first.`,
+      );
+    }
     return this.prisma.product.delete({ where: { id } });
   }
 }
