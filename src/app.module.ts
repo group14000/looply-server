@@ -13,6 +13,7 @@ import { QueueModule } from './queue/queue.module';
 import { BillingModule } from './billing/billing.module';
 import { ProductsModule } from './products/products.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { MailModule } from './mail/mail.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { FeedbackModule } from './feedback/feedback.module';
     UsersModule,
     ProductsModule,
     FeedbackModule,
+    MailModule,
     QueueModule,
   ],
   controllers: [AppController],

@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   GoneException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,6 +11,7 @@ import { ProductsService } from '../products/products.service';
 import { UsersService } from '../users/users.service';
 import { ClerkConfigService } from '../config/clerk-config/clerk-config.service';
 import { FeedbackConfigService } from './feedback-config/feedback-config.service';
+import { FeedbackMailService } from '../mail/mail.service';
 import { FeedbackRequest } from '../generated/prisma/client';
 import { CreateFeedbackRequestDto } from './dto/create-feedback-request.dto';
 import { UpdateFeedbackRequestDto } from './dto/update-feedback-request.dto';
@@ -32,12 +34,15 @@ function isExpired(feedbackRequest: FeedbackRequest): boolean {
 
 @Injectable()
 export class FeedbackService {
+  private readonly logger = new Logger(FeedbackService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly productsService: ProductsService,
     private readonly usersService: UsersService,
     private readonly clerkConfig: ClerkConfigService,
     private readonly feedbackConfig: FeedbackConfigService,
+    private readonly feedbackMail: FeedbackMailService,
   ) {}
 
   /**
@@ -77,6 +82,34 @@ export class FeedbackService {
         expiresAt,
       },
     });
+
+    // Fire invite email — delivery failure must NOT fail the API request.
+    // The reviewer's link is still valid; emailStatus tracks delivery for
+    // observability (see emailSentAt / emailStatus on FeedbackRequest schema).
+    const reviewUrl = this.buildReviewUrl(token);
+    try {
+      await this.feedbackMail.sendFeedbackInvite({
+        to: dto.email,
+        customerName: dto.customerName,
+        companyName: dto.companyName,
+        productName: product.name,
+        optionalMessage: dto.optionalMessage,
+        reviewUrl,
+        expiresAt,
+      });
+      await this.prisma.feedbackRequest.update({
+        where: { id: request.id },
+        data: { emailSentAt: new Date(), emailStatus: 'SENT' },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to send feedback invite for request ${request.id}: ${(err as Error).message}`,
+      );
+      await this.prisma.feedbackRequest.update({
+        where: { id: request.id },
+        data: { emailStatus: 'FAILED' },
+      });
+    }
 
     return { request, token };
   }

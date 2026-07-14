@@ -10,6 +10,7 @@ import { UsersService } from '../users/users.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClerkConfigService } from '../config/clerk-config/clerk-config.service';
 import { FeedbackConfigService } from './feedback-config/feedback-config.service';
+import { FeedbackMailService } from '../mail/mail.service';
 import { decodeCursor } from './pagination.util';
 
 describe('FeedbackService', () => {
@@ -30,6 +31,7 @@ describe('FeedbackService', () => {
   };
   let clerkConfig: { frontendUrl: string };
   let feedbackConfig: { tokenPepper: string; linkTtlDays: number };
+  let feedbackMail: { sendFeedbackInvite: jest.Mock };
   let service: FeedbackService;
 
   beforeEach(() => {
@@ -50,12 +52,16 @@ describe('FeedbackService', () => {
     };
     clerkConfig = { frontendUrl: 'https://app.looply.ai' };
     feedbackConfig = { tokenPepper: 'test-pepper', linkTtlDays: 30 };
+    feedbackMail = {
+      sendFeedbackInvite: jest.fn().mockResolvedValue(undefined),
+    };
     service = new FeedbackService(
       prisma as unknown as PrismaService,
       productsService as unknown as ProductsService,
       usersService as unknown as UsersService,
       clerkConfig as unknown as ClerkConfigService,
       feedbackConfig as unknown as FeedbackConfigService,
+      feedbackMail as unknown as FeedbackMailService,
     );
   });
 

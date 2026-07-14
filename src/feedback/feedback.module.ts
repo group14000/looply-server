@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ProductsModule } from '../products/products.module';
 import { UsersModule } from '../users/users.module';
+import { MailModule } from '../mail/mail.module';
 import { ClerkConfigService } from '../config/clerk-config/clerk-config.service';
 import { FeedbackConfigService } from './feedback-config/feedback-config.service';
 import { FeedbackService } from './feedback.service';
@@ -15,7 +16,10 @@ import { PublicFeedbackTokenGuard } from './guards/public-feedback-token/public-
   // pattern ClerkModule uses instead of importing ConfigurationModule,
   // which isn't @Global() and only exports it to AppModule). FeedbackConfigService
   // follows the same shape (own provider, only needs the global ConfigService).
-  imports: [ConfigModule, ProductsModule, UsersModule],
+  // MailModule is @Global() so FeedbackMailService is auto-available once
+  // MailModule is registered in AppModule, but we import it here explicitly
+  // so the dependency is visible at the module boundary.
+  imports: [ConfigModule, ProductsModule, UsersModule, MailModule],
   controllers: [FeedbackController, FeedbackPublicController],
   providers: [
     FeedbackService,
